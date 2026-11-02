@@ -1,0 +1,59 @@
+name: Update & deploy dashboard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 * * * *"   # ทุกชั่วโมง (UTC) — ดึง Excel ล่าสุดจาก OneDrive
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install openpyxl==3.1.5
+      - name: Download latest Excel from OneDrive share link
+        env:
+          XLSX_URL: ${{ vars.XLSX_URL }}
+        run: |
+          if [ -z "$XLSX_URL" ]; then echo "XLSX_URL not set — using data/energy_monthly.xlsx in repo"; exit 0; fi
+          python3 scripts/fetch_xlsx.py "$XLSX_URL" data/energy_monthly.new.xlsx && mv data/energy_monthly.new.xlsx data/energy_monthly.xlsx || echo "::warning::download failed — using copy in repo"
+      - name: Update data block
+        env:
+          DASH_XLSX: data/energy_monthly.xlsx
+          DASH_HTML: template/dashboard.html
+        run: python3 scripts/update_dashboard.py
+      - name: Commit data changes (keeps repo active)
+        run: |
+          git config user.name "dashboard-bot"
+          git config user.email "dashboard-bot@users.noreply.github.com"
+          git add data/energy_monthly.xlsx template/dashboard.html
+          git diff --cached --quiet || (git commit -m "Update energy data $(date -u +%F)" && git push)
+      - run: python3 scripts/build_site.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
